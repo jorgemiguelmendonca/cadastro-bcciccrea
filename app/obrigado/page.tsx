@@ -24,7 +24,7 @@ export default function Obrigado() {
       }
     }
 
-    const timer = window.setInterval(() => {
+    /*const timer = window.setInterval(() => {
       setSeconds(current => {
         if (current <= 1) {
           window.clearInterval(timer);
@@ -36,7 +36,7 @@ export default function Obrigado() {
       });
     }, 1000);
 
-    return () => window.clearInterval(timer);
+    return () => window.clearInterval(timer);*/
   }, []);
 
   return (
@@ -66,9 +66,9 @@ export default function Obrigado() {
           </a>
         )}
 
-        <div className="countdown">
+        {/* <div className="countdown">
           Será redirecionado em <strong>{seconds}s</strong>
-        </div>
+        </div>*/}
       </section>
     </main>
   );
