@@ -1,93 +1,86 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+
+import {
+  AsYouType,
+  getCountries,
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+  validatePhoneNumberLength,
+  type CountryCode,
+} from "libphonenumber-js";
+
+/**
+ * --------------------------------------------------------------------------
+ * Configuração
+ * --------------------------------------------------------------------------
+ */
+
+const DEFAULT_COUNTRY: CountryCode = "PT";
+
+/**
+ * --------------------------------------------------------------------------
+ * Países
+ * --------------------------------------------------------------------------
+ */
+
+const countries = getCountries();
+
+function getCountryName(countryCode: CountryCode) {
+  try {
+    const displayNames = new Intl.DisplayNames(["pt-PT"], {
+      type: "region",
+    });
+
+    return displayNames.of(countryCode) || countryCode;
+  } catch {
+    return countryCode;
+  }
+}
+
+function getCountryFlag(countryCode: CountryCode) {
+  return countryCode
+    .toUpperCase()
+    .split("")
+    .map(char => String.fromCodePoint(127397 + char.charCodeAt(0)))
+    .join("");
+}
+
+/**
+ * --------------------------------------------------------------------------
+ * Tracking
+ * --------------------------------------------------------------------------
+ */
 
 function getTracking() {
   const params = new URLSearchParams(window.location.search);
 
   return {
     utm_source: params.get("utm_source") ?? undefined,
-
     utm_medium: params.get("utm_medium") ?? undefined,
-
     utm_campaign: params.get("utm_campaign") ?? undefined,
-
     utm_term: params.get("utm_term") ?? undefined,
-
     gclid: params.get("gclid") ?? undefined,
   };
 }
 
 /**
  * --------------------------------------------------------------------------
- * Máscara de telefone português
+ * LeadForm
  * --------------------------------------------------------------------------
  */
-
-function formatPortuguesePhone(value: string) {
-  let numbers = value.replace(/\D/g, "");
-
-  // Remove o código 351 se o utilizador colar +351
-  if (numbers.startsWith("351")) {
-    numbers = numbers.slice(3);
-  }
-
-  // Máximo de 9 dígitos
-  numbers = numbers.slice(0, 9);
-
-  // Telemóveis portugueses começam com 9
-  if (numbers.length > 0 && numbers[0] !== "9") {
-    return "";
-  }
-
-  // +351 912 345 678
-  if (numbers.length > 6) {
-    return (
-      "+351 " +
-      numbers.slice(0, 3) +
-      " " +
-      numbers.slice(3, 6) +
-      " " +
-      numbers.slice(6)
-    );
-  }
-
-  // +351 912 345
-  if (numbers.length > 3) {
-    return "+351 " + numbers.slice(0, 3) + " " + numbers.slice(3);
-  }
-
-  // +351 912
-  if (numbers.length > 0) {
-    return "+351 " + numbers;
-  }
-
-  return "";
-}
-
-/*
-|--------------------------------------------------------------------------
-| Normaliza telefone
-|--------------------------------------------------------------------------
-*/
-
-function normalizePhone(phone: string) {
-  return phone.replace(/\D/g, "");
-}
-
-/*
-|--------------------------------------------------------------------------
-| LeadForm
-|--------------------------------------------------------------------------
-*/
 
 export default function LeadForm() {
   const router = useRouter();
 
   const [name, setName] = useState("");
+
+  const [country, setCountry] = useState<CountryCode>(DEFAULT_COUNTRY);
+
   const [phone, setPhone] = useState("");
+
   const [email, setEmail] = useState("");
 
   const [consent, setConsent] = useState(false);
@@ -96,11 +89,28 @@ export default function LeadForm() {
 
   const [error, setError] = useState("");
 
-  /*
-  |--------------------------------------------------------------------------
-  | Tracking
-  |--------------------------------------------------------------------------
-  */
+  /**
+   * ------------------------------------------------------------------------
+   * Lista de países
+   * ------------------------------------------------------------------------
+   */
+
+  const countryOptions = useMemo(() => {
+    return countries
+      .map(countryCode => ({
+        code: countryCode,
+        name: getCountryName(countryCode),
+        callingCode: getCountryCallingCode(countryCode),
+        flag: getCountryFlag(countryCode),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-PT"));
+  }, []);
+
+  /**
+   * ------------------------------------------------------------------------
+   * Tracking
+   * ------------------------------------------------------------------------
+   */
 
   useEffect(() => {
     const tracking = getTracking();
@@ -108,74 +118,154 @@ export default function LeadForm() {
     sessionStorage.setItem("lead_tracking", JSON.stringify(tracking));
   }, []);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Telefone
-  |--------------------------------------------------------------------------
-  */
+  /**
+   * ------------------------------------------------------------------------
+   * Alterar país
+   * ------------------------------------------------------------------------
+   */
 
-  function handlePhoneChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const formatted = formatPortuguesePhone(event.target.value);
-    setPhone(formatted);
+  function handleCountryChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const selectedCountry = event.target.value as CountryCode;
+
+    setCountry(selectedCountry);
+
+    // Evita manter um número do país anterior
+    setPhone("");
+
+    setError("");
   }
 
-  /*
-  |--------------------------------------------------------------------------
-  | Envio
-  |--------------------------------------------------------------------------
-  */
+  /**
+   * ------------------------------------------------------------------------
+   * Telefone
+   * ------------------------------------------------------------------------
+   *
+   * A biblioteca:
+   *
+   * - formata o número enquanto o utilizador digita;
+   * - identifica o tamanho máximo permitido;
+   * - impede números excessivamente longos;
+   * - funciona para diferentes países.
+   */
+
+  function handlePhoneChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value;
+
+    /**
+     * --------------------------------------------------------------
+     * Verificar se o número já ultrapassou o tamanho permitido
+     * --------------------------------------------------------------
+     */
+
+    const lengthStatus = validatePhoneNumberLength(value, country);
+
+    /**
+     * TOO_LONG significa que já ultrapassou o comprimento
+     * máximo possível para aquele país.
+     *
+     * Nesse caso simplesmente ignoramos o novo caractere.
+     */
+    if (lengthStatus === "TOO_LONG") {
+      return;
+    }
+
+    /**
+     * --------------------------------------------------------------
+     * Formatação automática
+     * --------------------------------------------------------------
+     */
+
+    const formatter = new AsYouType(country);
+
+    const formatted = formatter.input(value);
+
+    setPhone(formatted);
+
+    /**
+     * Limpar erro enquanto o utilizador corrige o número
+     */
+    if (error) {
+      setError("");
+    }
+  }
+
+  /**
+   * ------------------------------------------------------------------------
+   * Envio
+   * ------------------------------------------------------------------------
+   */
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     setError("");
 
-    /*
-    |--------------------------------------------------------------------------
-    | Validar nome
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * Nome
+     * ----------------------------------------------------------------------
+     */
 
     if (name.trim().length < 2) {
       setError("Insira o seu nome completo.");
-
       return;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Validar telefone italiano
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * Telefone
+     * ----------------------------------------------------------------------
+     */
 
-    const normalizedPhone = normalizePhone(phone);
+    const phoneNumber = parsePhoneNumberFromString(phone, country);
 
-    if (!/^3519\d{8}$/.test(normalizedPhone)) {
-      setError("Insira um número de telemóvel português válido.");
+    /**
+     * Número inexistente ou inválido
+     */
+    if (!phoneNumber || !phoneNumber.isValid()) {
+      setError("Insira um número de telefone válido para o país selecionado.");
       return;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Validar email
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * Número internacional E.164
+     * ----------------------------------------------------------------------
+     *
+     * Exemplos:
+     *
+     * Portugal:
+     * +351912345678
+     *
+     * Brasil:
+     * +5511999999999
+     *
+     * Itália:
+     * +393201234567
+     */
+
+    const internationalPhone = phoneNumber.number;
+
+    /**
+     * ----------------------------------------------------------------------
+     * Email
+     * ----------------------------------------------------------------------
+     */
 
     if (!email.trim()) {
       setError("Insira o seu endereço de e-mail.");
-
       return;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Validar consentimento
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * Consentimento
+     * ----------------------------------------------------------------------
+     */
 
     if (!consent) {
       setError(
-        "É necessário aceitar a política de privacidade para continuar."
+        "É necessário aceitar os Termos de Uso e a Política de Privacidade para continuar."
       );
 
       return;
@@ -184,9 +274,21 @@ export default function LeadForm() {
     setLoading(true);
 
     try {
+      /**
+       * --------------------------------------------------------------------
+       * Tracking
+       * --------------------------------------------------------------------
+       */
+
       const tracking = JSON.parse(
         sessionStorage.getItem("lead_tracking") || "{}"
       );
+
+      /**
+       * --------------------------------------------------------------------
+       * Enviar para API
+       * --------------------------------------------------------------------
+       */
 
       const response = await fetch("/api/leads", {
         method: "POST",
@@ -198,7 +300,14 @@ export default function LeadForm() {
         body: JSON.stringify({
           name: name.trim(),
 
+          // Número formatado visualmente
           phone,
+
+          // Número internacional normalizado
+          phone_international: internationalPhone,
+
+          // País selecionado
+          country,
 
           email: email.trim(),
 
@@ -218,29 +327,31 @@ export default function LeadForm() {
         );
       }
 
-      /*
-      |--------------------------------------------------------------------------
-      | Guardar WhatsApp
-      |--------------------------------------------------------------------------
-      */
+      /**
+       * --------------------------------------------------------------------
+       * WhatsApp
+       * --------------------------------------------------------------------
+       */
 
-      sessionStorage.setItem("lead_whatsapp_url", result.whatsappUrl);
+      if (result.whatsappUrl) {
+        sessionStorage.setItem("lead_whatsapp_url", result.whatsappUrl);
+      }
 
-      /*
-      |--------------------------------------------------------------------------
-      | Guardar ID se existir
-      |--------------------------------------------------------------------------
-      */
+      /**
+       * --------------------------------------------------------------------
+       * ID do lead
+       * --------------------------------------------------------------------
+       */
 
       if (result.leadId) {
         sessionStorage.setItem("lead_id", String(result.leadId));
       }
 
-      /*
-      |--------------------------------------------------------------------------
-      | Ir para obrigado
-      |--------------------------------------------------------------------------
-      */
+      /**
+       * --------------------------------------------------------------------
+       * Página de obrigado
+       * --------------------------------------------------------------------
+       */
 
       router.push("/obrigado");
     } catch (err) {
@@ -252,16 +363,30 @@ export default function LeadForm() {
     }
   }
 
+  /**
+   * ------------------------------------------------------------------------
+   * Render
+   * ------------------------------------------------------------------------
+   */
+
   return (
     <form className="lead-form" onSubmit={handleSubmit} noValidate>
-      {/* NOME */}
+      {/* ------------------------------------------------------------------ */}
+      {/* NOME                                                               */}
+      {/* ------------------------------------------------------------------ */}
 
       <label>
         Nome completo
         <input
           type="text"
           value={name}
-          onChange={event => setName(event.target.value)}
+          onChange={event => {
+            setName(event.target.value);
+
+            if (error) {
+              setError("");
+            }
+          }}
           required
           maxLength={100}
           autoComplete="name"
@@ -269,30 +394,61 @@ export default function LeadForm() {
         />
       </label>
 
-      {/* TELEFONE */}
+      {/* ------------------------------------------------------------------ */}
+      {/* TELEFONE                                                            */}
+      {/* ------------------------------------------------------------------ */}
 
       <label>
-        Telemóvel
-        <input
-          type="tel"
-          inputMode="numeric"
-          autoComplete="tel"
-          value={phone}
-          onChange={handlePhoneChange}
-          placeholder="+351 9XX XXX XXX"
-          maxLength={16}
-          required
-        />
+        Telefone
+        <div className="phone-field">
+          {/* PAÍS */}
+
+          <select
+            className="phone-country"
+            value={country}
+            onChange={handleCountryChange}
+            aria-label="País"
+          >
+            {countryOptions.map(item => (
+              <option key={item.code} value={item.code}>
+                {item.flag} {item.name} +{item.callingCode}
+              </option>
+            ))}
+          </select>
+
+          {/* NÚMERO */}
+
+          <input
+            className="phone-number"
+            type="tel"
+            inputMode="tel"
+            autoComplete="tel"
+            value={phone}
+            onChange={handlePhoneChange}
+            placeholder="Número de telefone"
+            maxLength={30}
+            required
+            aria-label="Número de telefone"
+          />
+        </div>
       </label>
 
-      {/* EMAIL */}
+      {/* ------------------------------------------------------------------ */}
+      {/* EMAIL                                                               */}
+      {/* ------------------------------------------------------------------ */}
 
       <label>
         E-mail
         <input
           type="email"
           value={email}
-          onChange={event => setEmail(event.target.value)}
+          onChange={event => {
+            setEmail(event.target.value);
+
+            if (error) {
+              setError("");
+            }
+          }}
           required
           maxLength={150}
           autoComplete="email"
@@ -300,12 +456,21 @@ export default function LeadForm() {
         />
       </label>
 
-      {/* CONSENTIMENTO */}
+      {/* ------------------------------------------------------------------ */}
+      {/* CONSENTIMENTO                                                       */}
+      {/* ------------------------------------------------------------------ */}
+
       <label className="consent">
         <input
           type="checkbox"
           checked={consent}
-          onChange={event => setConsent(event.target.checked)}
+          onChange={event => {
+            setConsent(event.target.checked);
+
+            if (error) {
+              setError("");
+            }
+          }}
         />
 
         <span>
@@ -326,7 +491,9 @@ export default function LeadForm() {
         </span>
       </label>
 
-      {/* ERRO */}
+      {/* ------------------------------------------------------------------ */}
+      {/* ERRO                                                                */}
+      {/* ------------------------------------------------------------------ */}
 
       {error && (
         <p className="form-error" role="alert">
@@ -334,19 +501,28 @@ export default function LeadForm() {
         </p>
       )}
 
-      {/* BOTÃO */}
+      {/* ------------------------------------------------------------------ */}
+      {/* BOTÃO                                                               */}
+      {/* ------------------------------------------------------------------ */}
 
       <button type="submit" disabled={loading}>
         {loading ? "A enviar..." : "Solicitar contacto"}
       </button>
 
-      {/* DISCLAIMER */}
+      {/* ------------------------------------------------------------------ */}
+      {/* DISCLAIMER                                                          */}
+      {/* ------------------------------------------------------------------ */}
 
       <p className="disclaimer">
         O envio deste formulário não representa aprovação ou concessão de
         crédito. Qualquer operação está sujeita a análise, elegibilidade e às
         condições aplicáveis.
       </p>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* CONSENTIMENTO / INFORMAÇÕES                                        */}
+      {/* ------------------------------------------------------------------ */}
+
       <div className="consent-info">
         <span>Consentimento e privacidade</span>
 

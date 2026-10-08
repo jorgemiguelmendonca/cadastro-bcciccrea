@@ -4,24 +4,44 @@ import { createClient } from "@supabase/supabase-js";
 
 import { z } from "zod";
 
-/*
-|--------------------------------------------------------------------------
-| Validação
-|--------------------------------------------------------------------------
-*/
+import {
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js";
 
-const portugueseMobileRegex = /^\+351\s?9\d{2}\s?\d{3}\s?\d{3}$/;
+/**
+ * --------------------------------------------------------------------------
+ * Schema
+ * --------------------------------------------------------------------------
+ *
+ * O telefone agora é internacional.
+ *
+ * O frontend envia:
+ *
+ * country:
+ * "PT"
+ *
+ * phone:
+ * "912 345 678"
+ *
+ * phone_international:
+ * "+351912345678"
+ *
+ * A validação definitiva é feita novamente no servidor.
+ */
 
 const schema = z.object({
   name: z.string().trim().min(2).max(100),
 
-  phone: z
+  phone: z.string().trim().min(3).max(40),
+
+  country: z
     .string()
     .trim()
-    .regex(
-      portugueseMobileRegex,
-      "Insira um número de telemóvel português válido."
-    ),
+    .length(2)
+    .transform(value => value.toUpperCase()),
+
+  phone_international: z.string().trim().min(5).max(30).optional(),
 
   email: z.string().trim().email().max(150),
 
@@ -45,37 +65,27 @@ const schema = z.object({
   gclid: z.string().trim().max(300).optional(),
 });
 
-/*
-|--------------------------------------------------------------------------
-| Normalizar telefone
-|--------------------------------------------------------------------------
-*/
-
-function normalizePhone(phone: string) {
-  return phone.replace(/\D/g, "");
-}
-
-/*
-|--------------------------------------------------------------------------
-| POST
-|--------------------------------------------------------------------------
-*/
+/**
+ * --------------------------------------------------------------------------
+ * POST
+ * --------------------------------------------------------------------------
+ */
 
 export async function POST(request: NextRequest) {
   try {
-    /*
-    |--------------------------------------------------------------------------
-    | 1. Ler JSON
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 1. Ler JSON
+     * ----------------------------------------------------------------------
+     */
 
     const body = await request.json();
 
-    /*
-    |--------------------------------------------------------------------------
-    | 2. Validar
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 2. Validar estrutura dos dados
+     * ----------------------------------------------------------------------
+     */
 
     const parsed = schema.safeParse(body);
 
@@ -83,7 +93,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-
           error: parsed.error.issues[0]?.message || "Dados inválidos.",
         },
         {
@@ -94,25 +103,40 @@ export async function POST(request: NextRequest) {
 
     const data = parsed.data;
 
-    /*
-    |--------------------------------------------------------------------------
-    | 3. Normalizar telefone
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 3. Validar país
+     * ----------------------------------------------------------------------
+     *
+     * libphonenumber-js utiliza códigos ISO de duas letras:
+     *
+     * PT = Portugal
+     * BR = Brasil
+     * IT = Itália
+     * ES = Espanha
+     * FR = França
+     * etc.
+     */
 
-    const normalizedPhone = normalizePhone(data.phone);
+    const countryCode = data.country as CountryCode;
 
-    /*
-    |--------------------------------------------------------------------------
-    | 4. Garantir celular italiano
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 4. Validar e normalizar telefone
+     * ----------------------------------------------------------------------
+     *
+     * O número é interpretado de acordo com o país selecionado.
+     *
+     * Não usamos mais regex específica de Portugal.
+     */
 
-    if (!/^3519\d{8}$/.test(normalizedPhone)) {
+    const phoneNumber = parsePhoneNumberFromString(data.phone, countryCode);
+
+    if (!phoneNumber || !phoneNumber.isValid()) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Insira um número de telemóvel português válido.",
+          error: "Insira um número de telefone válido para o país selecionado.",
         },
         {
           status: 400,
@@ -120,11 +144,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | 5. Variáveis de ambiente
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 5. Número internacional E.164
+     * ----------------------------------------------------------------------
+     *
+     * Exemplos:
+     *
+     * Portugal:
+     * +351912345678
+     *
+     * Brasil:
+     * +5511999999999
+     *
+     * Itália:
+     * +393201234567
+     */
+
+    const normalizedPhone = phoneNumber.number;
+
+    /**
+     * ----------------------------------------------------------------------
+     * 6. Variáveis de ambiente
+     * ----------------------------------------------------------------------
+     */
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
@@ -138,7 +181,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-
           error: "Serviço temporariamente indisponível.",
         },
         {
@@ -147,11 +189,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | 6. Supabase
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 7. Supabase
+     * ----------------------------------------------------------------------
+     */
 
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
       db: {
@@ -164,39 +206,55 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    /*
-    |--------------------------------------------------------------------------
-    | 7. Salvar lead
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 8. Salvar lead
+     * ----------------------------------------------------------------------
+     *
+     * Importante:
+     *
+     * A coluna "phone" continuará sendo utilizada.
+     *
+     * Porém agora ela recebe o número internacional normalizado.
+     *
+     * Exemplo:
+     *
+     * +351912345678
+     * +5511999999999
+     * +393201234567
+     */
 
-    const { error: insertError } = await supabase.from("leads").insert({
-      name: data.name,
+    const { data: insertedLead, error: insertError } = await supabase
+      .from("leads")
+      .insert({
+        name: data.name,
 
-      phone: normalizedPhone,
+        phone: normalizedPhone,
 
-      email: data.email,
+        email: data.email,
 
-      consent: data.consent,
+        consent: data.consent,
 
-      source: data.source,
+        source: data.source,
 
-      utm_source: data.utm_source ?? null,
+        utm_source: data.utm_source ?? null,
 
-      utm_medium: data.utm_medium ?? null,
+        utm_medium: data.utm_medium ?? null,
 
-      utm_campaign: data.utm_campaign ?? null,
+        utm_campaign: data.utm_campaign ?? null,
 
-      utm_term: data.utm_term ?? null,
+        utm_term: data.utm_term ?? null,
 
-      gclid: data.gclid ?? null,
-    });
+        gclid: data.gclid ?? null,
+      })
+      .select("id")
+      .single();
 
-    /*
-    |--------------------------------------------------------------------------
-    | 8. Erro Supabase
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 9. Erro Supabase
+     * ----------------------------------------------------------------------
+     */
 
     if (insertError) {
       console.error("Supabase insert error:", insertError);
@@ -204,7 +262,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-
           error: "Não foi possível registrar o pedido.",
         },
         {
@@ -213,30 +270,50 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | 9. Mensagem WhatsApp
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 10. Mensagem WhatsApp
+     * ----------------------------------------------------------------------
+     *
+     * Usamos o número internacional normalizado para evitar ambiguidades.
+     */
 
     const message = [
       `Olá, sou ${data.name}.`,
+
       "",
+
       "Acabei de preencher o formulário de contacto para obter informações sobre soluções de crédito.",
+
       "",
-      `Telefone: ${data.phone}`,
+
+      `Telefone: ${normalizedPhone}`,
+
       `Email: ${data.email}`,
+
       "",
+
       "Gostaria de falar com um consultor.",
     ].join("\n");
 
-    /*
-    |--------------------------------------------------------------------------
-    | 10. Número WhatsApp
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 11. Número do WhatsApp
+     * ----------------------------------------------------------------------
+     *
+     * O WHATSAPP_NUMBER deve ser configurado no .env.local sem:
+     *
+     * +
+     * espaços
+     * parênteses
+     * hífens
+     *
+     * Exemplo:
+     *
+     * WHATSAPP_NUMBER=351912345678
+     */
 
-    const normalizedWhatsappNumber = normalizePhone(whatsappNumber);
+    const normalizedWhatsappNumber = whatsappNumber.replace(/\D/g, "");
 
     if (normalizedWhatsappNumber.length < 7) {
       console.error("Número de WhatsApp inválido.");
@@ -244,7 +321,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-
           error: "WhatsApp configurado incorretamente.",
         },
         {
@@ -253,24 +329,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | 11. URL WhatsApp
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 12. URL WhatsApp
+     * ----------------------------------------------------------------------
+     */
 
     const whatsappUrl =
       `https://wa.me/${normalizedWhatsappNumber}` +
       `?text=${encodeURIComponent(message)}`;
 
-    /*
-    |--------------------------------------------------------------------------
-    | 12. Sucesso
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * ----------------------------------------------------------------------
+     * 13. Sucesso
+     * ----------------------------------------------------------------------
+     */
 
     return NextResponse.json({
       ok: true,
+
+      leadId: insertedLead?.id ?? null,
 
       whatsappUrl,
     });
@@ -280,7 +358,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         ok: false,
-
         error: "Pedido inválido.",
       },
       {

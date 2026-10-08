@@ -645,3 +645,51 @@ h1 {
     justify-content: flex-start;
   }
 }
+.phone-field {
+  display: grid;
+  grid-template-columns: minmax(145px, 0.9fr) 1.6fr;
+  gap: 8px;
+}
+
+.phone-country,
+.phone-number {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  border: 1px solid #d0d5dd;
+  border-radius: 9px;
+  background: #fff;
+  color: #123524;
+  font-family: inherit;
+  font-size: 14px;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.phone-country {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.phone-number {
+  padding: 0 12px;
+}
+
+.phone-country:focus,
+.phone-number:focus {
+  outline: none;
+  border-color: #006f34;
+  box-shadow: 0 0 0 3px rgba(0, 111, 52, 0.1);
+}
+
+@media (max-width: 600px) {
+  .phone-field {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .phone-country {
+    height: 42px;
+  }
+}
